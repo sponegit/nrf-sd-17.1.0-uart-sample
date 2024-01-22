@@ -51,6 +51,8 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <ctype.h>
+
 #include "nordic_common.h"
 #include "nrf.h"
 #include "ble_hci.h"
@@ -69,6 +71,11 @@
 #include "bsp_btn_ble.h"
 #include "nrf_pwr_mgmt.h"
 
+#include "nrf_drv_power.h"
+#include "nrf_crypto.h"
+#include "nrf_crypto_error.h"
+#include "mem_manager.h"
+
 #if defined (UART_PRESENT)
 #include "nrf_uart.h"
 #endif
@@ -82,7 +89,7 @@
 
 #define APP_BLE_CONN_CFG_TAG            1                                           /**< A tag identifying the SoftDevice BLE configuration. */
 
-#define DEVICE_NAME                     "Nordic_UART"                               /**< Name of device. Will be included in the advertising data. */
+#define DEVICE_NAME                     "Nordic_UART(AES)"                               /**< Name of device. Will be included in the advertising data. */
 #define NUS_SERVICE_UUID_TYPE           BLE_UUID_TYPE_VENDOR_BEGIN                  /**< UUID type for the Nordic UART Service (vendor specific). */
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */
@@ -103,6 +110,28 @@
 
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
+#define TEST_AES_MAC_SIZE                              (10)
+#define TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE      (100)
+#define AES_ERROR_CHECK(error)  \
+    do {            \
+        if (error)  \
+        {           \
+            NRF_LOG_RAW_INFO("\r\nError = 0x%x\r\n%s\r\n",           \
+                             (error),                                \
+                             nrf_crypto_error_string_get(error));    \
+            return; \
+        }           \
+    } while (0);
+
+static uint8_t m_test_key[16] =    { 't', 'e', 's', 't', '1', '2',
+                                        't', 'e', 's', 't', '1', '2',
+                                        '1', '2', '3', '4' };
+static char m_test_plain_text[] =  { 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, // 16 bytes
+                                        0x30, 0x30, 0x30, 0x72, 0xFB, 0xBA, 
+                                        0x10, 0x19, 0xEF, 0xD9 };
+static char m_test_encrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
+static char m_test_decrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
+
 
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
@@ -184,6 +213,86 @@ static void nrf_qwr_error_handler(uint32_t nrf_error)
     APP_ERROR_HANDLER(nrf_error);
 }
 
+static void test_crypt_ccm(void)
+{
+    uint32_t    len;
+    ret_code_t  ret_val;
+
+    static uint8_t     mac[TEST_AES_MAC_SIZE];   // 10bytes
+    static uint8_t     nonce[]  = {                 // 12 bytes
+      0x6B, 0x65, 0x79, 0x70, 0x6C, 0x65,
+      0x09, 0x67, 0xC5, 0x69, 0x44, 0xDB
+    };
+    
+    static nrf_crypto_aead_context_t ccm_ctx;
+
+    memset(mac,   0, sizeof(mac));
+    // memset(nonce, 0, sizeof(nonce));
+
+    
+    len = sizeof(m_test_plain_text);
+
+    NRF_LOG_INFO("PRINT :: plain text >>");
+    NRF_LOG_HEXDUMP_INFO(m_test_plain_text, len);
+
+    /* Init encrypt and decrypt context */
+    NRF_LOG_INFO("init crypto >>");
+    ret_val = nrf_crypto_aead_init(&ccm_ctx,
+                                   &g_nrf_crypto_aes_ccm_128_info,
+                                   m_test_key);
+    AES_ERROR_CHECK(ret_val);
+
+    /* encrypt and tag text */
+    NRF_LOG_INFO("encrypt >>");
+    ret_val = nrf_crypto_aead_crypt(&ccm_ctx,
+                                    NRF_CRYPTO_ENCRYPT,
+                                    nonce,
+                                    sizeof(nonce),
+                                    NULL,
+                                    0,
+                                    (uint8_t *)m_test_plain_text,
+                                    len,
+                                    (uint8_t *)m_test_encrypted_text,
+                                    mac,
+                                    sizeof(mac));
+    AES_ERROR_CHECK(ret_val);
+
+    NRF_LOG_INFO("PRINT :: encrypted text >>");
+    NRF_LOG_HEXDUMP_INFO(m_test_encrypted_text, len);
+    NRF_LOG_INFO("PRINT :: mac >>");
+    NRF_LOG_HEXDUMP_INFO(mac, sizeof(mac));
+
+    /* decrypt text */
+    NRF_LOG_INFO("decrypt >>");
+    ret_val = nrf_crypto_aead_crypt(&ccm_ctx,
+                                    NRF_CRYPTO_DECRYPT,
+                                    nonce,
+                                    sizeof(nonce),
+                                    NULL,
+                                    0,
+                                    (uint8_t *)m_test_encrypted_text,
+                                    len,
+                                    (uint8_t *)m_test_decrypted_text,
+                                    mac,
+                                    sizeof(mac));
+    AES_ERROR_CHECK(ret_val);
+
+    ret_val = nrf_crypto_aead_uninit(&ccm_ctx);
+    AES_ERROR_CHECK(ret_val);
+
+    NRF_LOG_INFO("PRINT :: decrypted text >>");
+    NRF_LOG_HEXDUMP_INFO(m_test_decrypted_text, len);
+
+    if (memcmp(m_test_plain_text, m_test_decrypted_text, strlen(m_test_plain_text)) == 0)
+    {
+        NRF_LOG_RAW_INFO("AES CCM example executed successfully.\r\n");
+    }
+    else
+    {
+        NRF_LOG_RAW_INFO("AES CCM example failed!!!.\r\n");
+    }
+}
+
 
 /**@brief Function for handling the data from the Nordic UART Service.
  *
@@ -200,25 +309,32 @@ static void nus_data_handler(ble_nus_evt_t * p_evt)
     {
         uint32_t err_code;
 
-        NRF_LOG_DEBUG("Received data from BLE NUS. Writing data on UART.");
-        NRF_LOG_HEXDUMP_DEBUG(p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
+        NRF_LOG_INFO("Received data from BLE NUS. Writing data on UART.");
+        NRF_LOG_HEXDUMP_INFO(p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
 
-        for (uint32_t i = 0; i < p_evt->params.rx_data.length; i++)
-        {
-            do
-            {
-                err_code = app_uart_put(p_evt->params.rx_data.p_data[i]);
-                if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_BUSY))
-                {
-                    NRF_LOG_ERROR("Failed receiving NUS message. Error 0x%x. ", err_code);
-                    APP_ERROR_CHECK(err_code);
-                }
-            } while (err_code == NRF_ERROR_BUSY);
+        if (p_evt->params.rx_data.length > 0) {
+            if (p_evt->params.rx_data.p_data[0] == 0x31) {
+                NRF_LOG_INFO("BLE ORDER: encrypt");
+                test_crypt_ccm();
+            }
         }
-        if (p_evt->params.rx_data.p_data[p_evt->params.rx_data.length - 1] == '\r')
-        {
-            while (app_uart_put('\n') == NRF_ERROR_BUSY);
-        }
+
+        //for (uint32_t i = 0; i < p_evt->params.rx_data.length; i++)
+        //{
+        //    do
+        //    {
+        //        err_code = app_uart_put(p_evt->params.rx_data.p_data[i]);
+        //        if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_BUSY))
+        //        {
+        //            NRF_LOG_ERROR("Failed receiving NUS message. Error 0x%x. ", err_code);
+        //            APP_ERROR_CHECK(err_code);
+        //        }
+        //    } while (err_code == NRF_ERROR_BUSY);
+        //}
+        //if (p_evt->params.rx_data.p_data[p_evt->params.rx_data.length - 1] == '\r')
+        //{
+        //    while (app_uart_put('\n') == NRF_ERROR_BUSY);
+        //}
     }
 
 }
@@ -570,6 +686,22 @@ void uart_event_handle(app_uart_evt_t * p_event)
 }
 /**@snippet [Handling the data received over UART] */
 
+static void crypto_init(void) {
+    uint32_t                     err_code;
+
+    //err_code = nrf_drv_clock_init();
+    //APP_ERROR_CHECK(err_code);
+
+    err_code = nrf_drv_power_init(NULL);
+    APP_ERROR_CHECK(err_code);
+
+    err_code = nrf_crypto_init();
+    APP_ERROR_CHECK(err_code);
+
+    err_code = nrf_mem_init();
+    APP_ERROR_CHECK(err_code);
+}
+
 
 /**@brief  Function for initializing the UART module.
  */
@@ -698,9 +830,11 @@ int main(void)
 {
     bool erase_bonds;
 
+
     // Initialize.
     uart_init();
     log_init();
+    crypto_init();
     timers_init();
     buttons_leds_init(&erase_bonds);
     power_management_init();
@@ -713,7 +847,7 @@ int main(void)
 
     // Start execution.
     printf("\r\nUART started.\r\n");
-    NRF_LOG_INFO("Debug logging for UART over RTT started.");
+    NRF_LOG_INFO("Debug logging for UART over RTT started.(new version)");
     advertising_start();
 
     // Enter main loop.
