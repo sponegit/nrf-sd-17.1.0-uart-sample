@@ -49,6 +49,7 @@
  */
 
 
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include "nordic_common.h"
@@ -82,7 +83,7 @@
 
 #define APP_BLE_CONN_CFG_TAG            1                                           /**< A tag identifying the SoftDevice BLE configuration. */
 
-#define DEVICE_NAME                     "Nordic_UART"                               /**< Name of device. Will be included in the advertising data. */
+#define DEVICE_NAME                     "Nordic_UART_KP"                               /**< Name of device. Will be included in the advertising data. */
 #define NUS_SERVICE_UUID_TYPE           BLE_UUID_TYPE_VENDOR_BEGIN                  /**< UUID type for the Nordic UART Service (vendor specific). */
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */
@@ -104,6 +105,7 @@
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
 
+APP_TIMER_DEF(m_rssi_timer_id);
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
@@ -116,6 +118,126 @@ static ble_uuid_t m_adv_uuids[]          =                                      
 {
     {BLE_UUID_NUS_SERVICE, NUS_SERVICE_UUID_TYPE}
 };
+static int m_rssi_index = 0;
+static int m_rssi_sum = 0;
+static int8_t m_tx_power = -40;
+
+static void set_tx_power(int8_t tx_power) {
+
+    NRF_LOG_INFO("set_tx_power: value=%d", tx_power);
+    uint32_t err_code;
+    err_code = sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_ADV, 0, tx_power);
+    if (err_code != NRF_SUCCESS) {
+        NRF_LOG_ERROR("set_tx_power, ADV.result=%d", err_code);
+    }
+
+    err_code = sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_SCAN_INIT, 0, tx_power);
+    if (err_code != NRF_SUCCESS) {
+        NRF_LOG_ERROR("set_tx_power, SCAN.result=%d", err_code);
+    }
+    
+    if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+        err_code = sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_CONN, 0, tx_power);
+        if (err_code != NRF_SUCCESS) {
+            NRF_LOG_ERROR("set_tx_power: CONN.result=%d", err_code);
+        }
+    }
+}
+
+static void handle_uart_received(uint8_t *p_data, uint16_t length) {
+    if (length < 1)
+        return;
+
+    uint8_t id;
+    id = p_data[0];
+
+    switch(id) {
+        case 0x30: {
+                char *str;
+                str = malloc(length);
+                if (str == NULL) {
+                    NRF_LOG_ERROR("handle_uart_received:failed malloc(length);");
+                    break;
+                }
+
+                memcpy(str, &p_data[1], length-1);
+                str[length] = '\0';
+
+                char *endptr;
+                long number = strtol(str, &endptr, 10);
+                if (*endptr != '\0' || endptr == str) {
+                    NRF_LOG_ERROR("handle_uart_received:failed strtol(str, &endptr, 10);");
+                } else if (number < -40 || number > 10) {
+                    NRF_LOG_ERROR("handle_uart_received:invalid number=%d", number);
+                } else {
+                    int8_t tx_power;
+                    tx_power = (int8_t)number;
+                    m_tx_power = tx_power;
+                    set_tx_power(tx_power);
+                }
+
+                free(str);
+            }
+            break;
+        default: 
+            NRF_LOG_ERROR("unknown uart id:%d", id);
+            break;
+    }
+}
+
+
+static void handle_rssi_changed(int rssi) {
+    CRITICAL_REGION_ENTER();
+   
+    m_rssi_index++;
+    m_rssi_sum += rssi;
+    
+    CRITICAL_REGION_EXIT();
+}
+
+static void calculate_average_rssi() {
+    CRITICAL_REGION_ENTER();
+    if (m_rssi_index != 0) {
+        int average_rssi = m_rssi_sum / m_rssi_index;
+        NRF_LOG_INFO("Average RSSI: %d dBm, len: %d", average_rssi, m_rssi_index);
+
+        m_rssi_sum = 0;
+        m_rssi_index = 0;
+    }
+    CRITICAL_REGION_EXIT();
+}
+
+static void rssi_update_handler(void * p_context)
+{
+    if (m_conn_handle != BLE_CONN_HANDLE_INVALID)
+    {
+        calculate_average_rssi();
+    }
+}
+
+static void on_connection(void)
+{
+    uint32_t err_code;
+    set_tx_power(m_tx_power);
+    err_code = sd_ble_gap_rssi_start(m_conn_handle, 0, 0);
+    if (err_code != NRF_SUCCESS) {
+        NRF_LOG_ERROR("on_connection:sd_ble_gap_rssi_start.err=%d", err_code);
+    }else {
+        NRF_LOG_INFO("on_connection:sd_ble_gap_rssi_start");
+    }
+}
+
+static void on_disconnection(void)
+{
+    uint32_t err_code;
+    err_code = sd_ble_gap_rssi_stop(m_conn_handle);
+    if (err_code != NRF_SUCCESS) {
+        NRF_LOG_ERROR("on_connection:sd_ble_gap_rssi_stop.err=%d", err_code);
+    }else {
+        NRF_LOG_INFO("on_connection:sd_ble_gap_rssi_stop");
+    }
+}
+
 
 
 /**@brief Function for assert macro callback.
@@ -139,6 +261,14 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 static void timers_init(void)
 {
     ret_code_t err_code = app_timer_init();
+    APP_ERROR_CHECK(err_code);
+
+    // Create timer to read RSSI
+    err_code = app_timer_create(&m_rssi_timer_id, APP_TIMER_MODE_REPEATED, rssi_update_handler);
+    APP_ERROR_CHECK(err_code);
+
+    // Start timer with a period of 1000 ms (1 second)
+    err_code = app_timer_start(m_rssi_timer_id, APP_TIMER_TICKS(1000), NULL);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -202,6 +332,8 @@ static void nus_data_handler(ble_nus_evt_t * p_evt)
 
         NRF_LOG_DEBUG("Received data from BLE NUS. Writing data on UART.");
         NRF_LOG_HEXDUMP_DEBUG(p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
+        
+        handle_uart_received(p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
 
         for (uint32_t i = 0; i < p_evt->params.rx_data.length; i++)
         {
@@ -367,12 +499,15 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
             err_code = nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             APP_ERROR_CHECK(err_code);
+            on_connection();
             break;
 
         case BLE_GAP_EVT_DISCONNECTED:
             NRF_LOG_INFO("Disconnected");
+            on_disconnection();
             // LED indication will be changed when advertising starts.
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
+
             break;
 
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
@@ -411,6 +546,10 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
             err_code = sd_ble_gap_disconnect(p_ble_evt->evt.gatts_evt.conn_handle,
                                              BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
             APP_ERROR_CHECK(err_code);
+            break;
+
+        case BLE_GAP_EVT_RSSI_CHANGED:
+            handle_rssi_changed(p_ble_evt->evt.gap_evt.params.rssi_changed.rssi);
             break;
 
         default:
@@ -691,6 +830,17 @@ static void advertising_start(void)
     APP_ERROR_CHECK(err_code);
 }
 
+static void rssi_read_handler(uint16_t conn_handle) {
+    uint32_t err_code;
+    int8_t rssi;
+    err_code = sd_ble_gap_rssi_get(conn_handle, &rssi, NULL);
+    if (err_code == NRF_SUCCESS) {
+        NRF_LOG_INFO("RSSI=%d", rssi);
+    } else {
+        // failed
+    }
+}
+
 
 /**@brief Application main function.
  */
@@ -706,16 +856,22 @@ int main(void)
     power_management_init();
     ble_stack_init();
     gap_params_init();
-    gatt_init();
+    gatt_init(); 
     services_init();
     advertising_init();
     conn_params_init();
 
+    
+    set_tx_power(m_tx_power);
+
     // Start execution.
     printf("\r\nUART started.\r\n");
     NRF_LOG_INFO("Debug logging for UART over RTT started.");
+    NRF_LOG_DEBUG("Debug logging for UART over RTT started.--2");
     advertising_start();
+    // set_tx_power(m_tx_power);
 
+  
     // Enter main loop.
     for (;;)
     {

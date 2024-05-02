@@ -328,7 +328,7 @@
 // <e> BLE_BAS_CONFIG_LOG_ENABLED - Enables logging in the module.
 //==========================================================
 #ifndef BLE_BAS_CONFIG_LOG_ENABLED
-#define BLE_BAS_CONFIG_LOG_ENABLED 0
+#define BLE_BAS_CONFIG_LOG_ENABLED 1
 #endif
 // <o> BLE_BAS_CONFIG_LOG_LEVEL  - Default Severity level
  
@@ -7734,7 +7734,7 @@
 // <4=> Debug 
 
 #ifndef NRF_LOG_DEFAULT_LEVEL
-#define NRF_LOG_DEFAULT_LEVEL 3
+#define NRF_LOG_DEFAULT_LEVEL 4
 #endif
 
 // <q> NRF_LOG_DEFERRED  - Enable deffered logger.
