@@ -2,6 +2,11 @@
 *.bak
 */Output/
 *.emSession
+pca10040\s132\ses\Output\Release\Obj\ble_app_uart_pca10040_s132\*
+pca10040\s132\ses\Output\Release\Obj\*
+pca10040\s132\ses\Output\Release\*
+pca10040\s132\ses\Output\*
+
 
 
 
