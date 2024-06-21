@@ -76,6 +76,7 @@
 
 void Ble_Init(void);
 void Ble_Start(void);
+void Crypte_Init(void);
 
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
@@ -245,6 +246,7 @@ int main(void)
     
     power_management_init();
     Ble_Init();
+    Crypte_Init();
 
     // Start execution.
     printf("\r\nUART started.\r\n");
