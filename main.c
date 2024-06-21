@@ -126,12 +126,6 @@
 static uint8_t m_test_key[16] =    { 't', 'e', 's', 't', '1', '2',
                                         't', 'e', 's', 't', '1', '2',
                                         '1', '2', '3', '4' };
-static char m_test_plain_text[] =  { 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, // 16 bytes
-                                        0x30, 0x30, 0x30, 0x72, 0xFB, 0xBA, 
-                                        0x10, 0x19, 0xEF, 0xD9 };
-static char m_test_encrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
-static char m_test_decrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
-
 
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
@@ -218,22 +212,29 @@ static void test_crypt_ccm(void)
     uint32_t    len;
     ret_code_t  ret_val;
 
-    static uint8_t     mac[TEST_AES_MAC_SIZE];   // 10bytes
-    static uint8_t     nonce[]  = {                 // 12 bytes
+    uint8_t     mac[TEST_AES_MAC_SIZE];   // 10bytes
+    uint8_t     nonce[]  = {                 // 12 bytes
       0x6B, 0x65, 0x79, 0x70, 0x6C, 0x65,
       0x09, 0x67, 0xC5, 0x69, 0x44, 0xDB
     };
     
-    static nrf_crypto_aead_context_t ccm_ctx;
+    nrf_crypto_aead_context_t ccm_ctx;
 
-    memset(mac,   0, sizeof(mac));
-    // memset(nonce, 0, sizeof(nonce));
+    //memset(mac,   0, sizeof(mac));
+    //memset(nonce, 0, sizeof(nonce));
+
+    char plain_text[] =  { 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, // 16 bytes
+                                        0x30, 0x30, 0x30, 0x72, 0xFB, 0xBA, 
+                                        0x10, 0x19, 0xEF, 0xD9 };
+    char encrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
+    char decrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
+
 
     
-    len = sizeof(m_test_plain_text);
+    len = sizeof(plain_text);
 
     NRF_LOG_INFO("PRINT :: plain text >>");
-    NRF_LOG_HEXDUMP_INFO(m_test_plain_text, len);
+    NRF_LOG_HEXDUMP_INFO(plain_text, len);
 
     /* Init encrypt and decrypt context */
     NRF_LOG_INFO("init crypto >>");
@@ -243,36 +244,36 @@ static void test_crypt_ccm(void)
     AES_ERROR_CHECK(ret_val);
 
     /* encrypt and tag text */
-    NRF_LOG_INFO("encrypt >>");
+    //NRF_LOG_INFO("encrypt >>");
     ret_val = nrf_crypto_aead_crypt(&ccm_ctx,
                                     NRF_CRYPTO_ENCRYPT,
                                     nonce,
                                     sizeof(nonce),
                                     NULL,
                                     0,
-                                    (uint8_t *)m_test_plain_text,
+                                    (uint8_t *)plain_text,
                                     len,
-                                    (uint8_t *)m_test_encrypted_text,
+                                    (uint8_t *)encrypted_text,
                                     mac,
                                     sizeof(mac));
     AES_ERROR_CHECK(ret_val);
 
-    NRF_LOG_INFO("PRINT :: encrypted text >>");
-    NRF_LOG_HEXDUMP_INFO(m_test_encrypted_text, len);
-    NRF_LOG_INFO("PRINT :: mac >>");
-    NRF_LOG_HEXDUMP_INFO(mac, sizeof(mac));
+    //NRF_LOG_INFO("PRINT :: encrypted text >>");
+    //NRF_LOG_HEXDUMP_INFO(encrypted_text, len);
+    //NRF_LOG_INFO("PRINT :: mac >>");
+    //NRF_LOG_HEXDUMP_INFO(mac, sizeof(mac));
 
     /* decrypt text */
-    NRF_LOG_INFO("decrypt >>");
+    //NRF_LOG_INFO("decrypt >>");
     ret_val = nrf_crypto_aead_crypt(&ccm_ctx,
                                     NRF_CRYPTO_DECRYPT,
                                     nonce,
                                     sizeof(nonce),
                                     NULL,
                                     0,
-                                    (uint8_t *)m_test_encrypted_text,
+                                    (uint8_t *)encrypted_text,
                                     len,
-                                    (uint8_t *)m_test_decrypted_text,
+                                    (uint8_t *)decrypted_text,
                                     mac,
                                     sizeof(mac));
     AES_ERROR_CHECK(ret_val);
@@ -281,9 +282,9 @@ static void test_crypt_ccm(void)
     AES_ERROR_CHECK(ret_val);
 
     NRF_LOG_INFO("PRINT :: decrypted text >>");
-    NRF_LOG_HEXDUMP_INFO(m_test_decrypted_text, len);
+    NRF_LOG_HEXDUMP_INFO(decrypted_text, len);
 
-    if (memcmp(m_test_plain_text, m_test_decrypted_text, strlen(m_test_plain_text)) == 0)
+    if (memcmp(plain_text, decrypted_text, strlen(plain_text)))
     {
         NRF_LOG_RAW_INFO("AES CCM example executed successfully.\r\n");
     }
