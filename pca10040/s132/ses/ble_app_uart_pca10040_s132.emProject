@@ -28,7 +28,7 @@
       linker_printf_fmt_level="long"
       linker_scanf_fmt_level="long"
       linker_section_placement_file="flash_placement.xml"
-      linker_section_placement_macros="FLASH_PH_START=0x0;FLASH_PH_SIZE=0x80000;RAM_PH_START=0x20000000;RAM_PH_SIZE=0x10000;FLASH_START=0x26000;FLASH_SIZE=0x5a000;RAM_START=0x20002ad8;RAM_SIZE=0xd528"
+      linker_section_placement_macros="FLASH_PH_START=0x0;FLASH_PH_SIZE=0x80000;RAM_PH_START=0x20000000;RAM_PH_SIZE=0x10000;FLASH_START=0x26000;FLASH_SIZE=0x5a000;RAM_START=0x20007910;RAM_SIZE=0x86F0"
       
       linker_section_placements_segments="FLASH1 RX 0x0 0x80000;RAM1 RWX 0x20000000 0x10000"
       project_directory=""
@@ -71,6 +71,9 @@
       <file file_name="../../../../../../components/libraries/uart/retarget.c" />
       <file file_name="../../../../../../components/libraries/queue/nrf_queue.c" />
       <file file_name="../../../../../../components/libraries/mem_manager/mem_manager.c" />
+      <file file_name="../../../../../../components/libraries/fds/fds.c" />
+      <file file_name="../../../../../../components/libraries/fstorage/nrf_fstorage.c" />
+      <file file_name="../../../../../../components/libraries/fstorage/nrf_fstorage_sd.c" />
     </folder>
     <folder Name="None">
       <file file_name="../../../../../../modules/nrfx/mdk/ses_startup_nrf52.s" />
@@ -263,6 +266,32 @@
       <file file_name="../../../../../../components/libraries/crypto/backend/oberon/oberon_backend_eddsa.c" />
       <file file_name="../../../../../../components/libraries/crypto/backend/oberon/oberon_backend_hash.c" />
       <file file_name="../../../../../../components/libraries/crypto/backend/oberon/oberon_backend_hmac.c" />
+    </folder>
+    <folder Name="nRF_BLE_Peer">
+      <file file_name="../../../../../../components/ble/peer_manager/peer_manager.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/auth_status_tracker.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/auth_status_tracker.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/gatt_cache_manager.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/gatt_cache_manager.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/gatts_cache_manager.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/gatts_cache_manager.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/id_manager.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/id_manager.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_data_storage.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_data_storage.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_database.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_database.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_id.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_id.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_manager.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_manager_handler.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/peer_manager_handler.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/pm_buffer.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/pm_buffer.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/security_dispatcher.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/security_dispatcher.h" />
+      <file file_name="../../../../../../components/ble/peer_manager/security_manager.c" />
+      <file file_name="../../../../../../components/ble/peer_manager/security_manager.h" />
     </folder>
   </project>
   <configuration Name="Release"

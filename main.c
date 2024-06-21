@@ -87,9 +87,12 @@
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
 
+#include "peer_manager.h"
+#include "peer_manager_handler.h"
+
 #define APP_BLE_CONN_CFG_TAG            1                                           /**< A tag identifying the SoftDevice BLE configuration. */
 
-#define DEVICE_NAME                     "Nordic_UART(AES)"                               /**< Name of device. Will be included in the advertising data. */
+#define DEVICE_NAME                     "Nordic_UART_MT(AES)"                               /**< Name of device. Will be included in the advertising data. */
 #define NUS_SERVICE_UUID_TYPE           BLE_UUID_TYPE_VENDOR_BEGIN                  /**< UUID type for the Nordic UART Service (vendor specific). */
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */
@@ -105,6 +108,15 @@
 #define FIRST_CONN_PARAMS_UPDATE_DELAY  APP_TIMER_TICKS(5000)                       /**< Time from initiating event (connect or start of notification) to first time sd_ble_gap_conn_param_update is called (5 seconds). */
 #define NEXT_CONN_PARAMS_UPDATE_DELAY   APP_TIMER_TICKS(30000)                      /**< Time between each call to sd_ble_gap_conn_param_update after the first call (30 seconds). */
 #define MAX_CONN_PARAMS_UPDATE_COUNT    3                                           /**< Number of attempts before giving up the connection parameter negotiation. */
+
+#define SEC_PARAM_BOND                      1                                       /**< Perform bonding. */
+#define SEC_PARAM_MITM                      0                                       /**< Man In The Middle protection not required. */
+#define SEC_PARAM_LESC                      0                                       /**< LE Secure Connections not enabled. */
+#define SEC_PARAM_KEYPRESS                  0                                       /**< Keypress notifications not enabled. */
+#define SEC_PARAM_IO_CAPABILITIES           BLE_GAP_IO_CAPS_NONE                    /**< No I/O capabilities. */
+#define SEC_PARAM_OOB                       0                                       /**< Out Of Band data not available. */
+#define SEC_PARAM_MIN_KEY_SIZE              7                                       /**< Minimum encryption key size. */
+#define SEC_PARAM_MAX_KEY_SIZE              16                                      /**< Maximum encryption key size. */
 
 #define DEAD_BEEF                       0xDEADBEEF                                  /**< Value used as error code on stack dump, can be used to identify stack location on stack unwind. */
 
@@ -136,15 +148,182 @@ static char m_test_decrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
-NRF_BLE_QWR_DEF(m_qwr);                                                             /**< Context for the Queued Write module.*/
+// NRF_BLE_QWR_DEF(m_qwr);                                                             /**< Context for the Queued Write module.*/
+NRF_BLE_QWRS_DEF(m_qwr, NRF_SDH_BLE_TOTAL_LINK_COUNT);
 BLE_ADVERTISING_DEF(m_advertising);                                                 /**< Advertising module instance. */
 
-static uint16_t   m_conn_handle          = BLE_CONN_HANDLE_INVALID;                 /**< Handle of the current connection. */
+// static uint16_t   m_conn_handle          = BLE_CONN_HANDLE_INVALID;                 /**< Handle of the current connection. */
 static uint16_t   m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - 3;            /**< Maximum length of data (in bytes) that can be transmitted to the peer by the Nordic UART service module. */
 static ble_uuid_t m_adv_uuids[]          =                                          /**< Universally unique service identifier. */
 {
     {BLE_UUID_NUS_SERVICE, NUS_SERVICE_UUID_TYPE}
 };
+
+static uint8_t m_rssi_index[NRF_SDH_BLE_TOTAL_LINK_COUNT] = { 0, };
+static int16_t m_rssi_sum[NRF_SDH_BLE_TOTAL_LINK_COUNT] = { 0, };
+static int8_t m_tx_power = 4;
+
+static void test_crypt_ccm(void);
+
+static void set_tx_power_conn(uint16_t handle, int8_t tx_power) {
+    if (handle != BLE_CONN_HANDLE_INVALID) {
+        NRF_LOG_INFO("set_tx_power_conn:handle=%d,value=%d", handle, tx_power);
+        uint32_t err_code;
+        err_code = sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_CONN, 0, tx_power);
+        if (err_code != NRF_SUCCESS) {
+            NRF_LOG_ERROR("set_tx_power_conn:result=%d", err_code);
+        }
+    }
+}
+
+static void app_ble_disconnect(uint16_t handle, uint8_t hci_status_code){
+    if (handle != BLE_CONN_HANDLE_INVALID) {
+        NRF_LOG_INFO("app_ble_disconnect:handle=%d,hci_status_code=%d", handle, hci_status_code);
+        uint32_t err_code;
+        err_code = sd_ble_gap_disconnect(handle, hci_status_code);
+        if (err_code  != NRF_SUCCESS){
+          NRF_LOG_ERROR("app_ble_disconnect:result=%d", err_code);
+        }
+        APP_ERROR_CHECK(err_code);
+    }
+}
+
+static void set_tx_power_conn_all(int8_t tx_power) {
+    for(int i =0; i < NRF_SDH_BLE_TOTAL_LINK_COUNT;i++){
+        set_tx_power_conn(m_qwr[i].conn_handle, tx_power);
+    }
+}
+
+static void set_tx_power_adv(int8_t tx_power) {
+    NRF_LOG_INFO("set_tx_power_adv: value=%d", tx_power);
+    uint32_t err_code;
+    err_code = sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_ADV, 0, tx_power);
+    if (err_code != NRF_SUCCESS) {
+        NRF_LOG_ERROR("set_tx_power_adv, result=%d", err_code);
+    }
+}
+
+static void app_ble_disconnect_all(uint8_t hci_status_code){
+    NRF_LOG_INFO("app_ble_disconnect_all:hci_status_code=%d", hci_status_code);
+
+    for(int i =0; i < NRF_SDH_BLE_TOTAL_LINK_COUNT;i++){
+        app_ble_disconnect(m_qwr[i].conn_handle, hci_status_code);
+    }
+}
+
+static void on_uart_receive(uint16_t handle, uint8_t *p_data, uint16_t length) {
+    if (length < 1)
+        return;
+
+    uint8_t id;
+    id = p_data[0];
+    switch(id) {
+        case 0x30: {
+            test_crypt_ccm();
+                //char *str;
+                //str = malloc(length);
+                //if (str == NULL) {
+                //    NRF_LOG_ERROR("on_uart_receive:failed malloc(length);");
+                //    break;
+                //}
+
+                //memcpy(str, &p_data[1], length-1);
+                //str[length] = '\0';
+                //char *endptr;
+                //long number = strtol(str, &endptr, 10);
+                //if (*endptr != '\0' || endptr == str) {
+                //    NRF_LOG_ERROR("on_uart_receive:failed strtol(str, &endptr, 10);");
+                //} else if (number < -40 || number > 10) {
+                //    NRF_LOG_ERROR("on_uart_receive:invalid number=%d", number);
+                //} else {
+                //    int8_t tx_power;
+                //    tx_power = (int8_t)number;
+                //    m_tx_power = tx_power;
+                //    set_tx_power_adv(tx_power);
+                //    set_tx_power_conn_all(tx_power);
+                //}
+
+                //free(str);
+            }
+            break;
+        default: 
+            NRF_LOG_ERROR("unknown uart id:%d", id);
+            break;
+    }
+}
+
+static void on_rssi_changed(uint16_t handle, int16_t rssi) {
+    CRITICAL_REGION_ENTER();
+
+    for(int i =0; i < NRF_SDH_BLE_TOTAL_LINK_COUNT;i++){
+        if (m_qwr[i].conn_handle == handle){
+            m_rssi_index[i]++;
+            m_rssi_sum[i] += rssi;          
+            break;
+        }
+    }
+
+    CRITICAL_REGION_EXIT();
+}
+
+static void calculate_average_rssi(uint8_t index) {
+    CRITICAL_REGION_ENTER();
+    if (m_rssi_index[index] != 0) {
+        int16_t average_rssi = m_rssi_sum[index] / m_rssi_index[index];
+        NRF_LOG_INFO("Average RSSI: %d dBm, len: %d", average_rssi, m_rssi_index[index]);
+
+        m_rssi_sum[index] = 0;
+        m_rssi_index[index] = 0;
+    }
+    CRITICAL_REGION_EXIT();
+}
+
+static void on_connection(uint8_t index, uint16_t handle)
+{
+    uint32_t err_code;
+
+    CRITICAL_REGION_ENTER();
+
+    m_rssi_index[index] = 0;
+    m_rssi_sum[index] = 0;
+
+    set_tx_power_conn(handle, m_tx_power);
+    err_code = sd_ble_gap_rssi_start(handle, 0, 0);
+    if (err_code != NRF_SUCCESS) {
+        NRF_LOG_ERROR("on_connection:handle=%d,sd_ble_gap_rssi_start.err=%d", handle, err_code);
+    }else {
+        NRF_LOG_INFO("on_connection:sd_ble_gap_rssi_start:handle=%d", handle);
+    }
+
+    CRITICAL_REGION_EXIT();
+}
+
+static void on_disconnection(uint8_t index, uint16_t handle)
+{
+    uint32_t err_code;
+
+    CRITICAL_REGION_ENTER();
+
+    err_code = sd_ble_gap_rssi_stop(handle);
+    if (err_code != NRF_SUCCESS) {
+        NRF_LOG_ERROR("on_disconnection:handle=%d,sd_ble_gap_rssi_stop.err=%d", handle, err_code);
+    }else {
+        NRF_LOG_INFO("on_disconnection:handle=%d,sd_ble_gap_rssi_stop", handle);
+    }
+
+    m_rssi_index[index] = 0;
+    m_rssi_sum[index] = 0;
+
+    CRITICAL_REGION_EXIT();
+}
+
+/**@brief Function for starting advertising.
+ */
+static void advertising_start(void)
+{
+    uint32_t err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
+    APP_ERROR_CHECK(err_code);
+}
 
 
 /**@brief Function for assert macro callback.
@@ -187,6 +366,9 @@ static void gap_params_init(void)
     err_code = sd_ble_gap_device_name_set(&sec_mode,
                                           (const uint8_t *) DEVICE_NAME,
                                           strlen(DEVICE_NAME));
+    APP_ERROR_CHECK(err_code);
+
+    err_code = sd_ble_gap_appearance_set(BLE_APPEARANCE_UNKNOWN);
     APP_ERROR_CHECK(err_code);
 
     memset(&gap_conn_params, 0, sizeof(gap_conn_params));
@@ -312,29 +494,24 @@ static void nus_data_handler(ble_nus_evt_t * p_evt)
         NRF_LOG_INFO("Received data from BLE NUS. Writing data on UART.");
         NRF_LOG_HEXDUMP_INFO(p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
 
-        if (p_evt->params.rx_data.length > 0) {
-            if (p_evt->params.rx_data.p_data[0] == 0x31) {
-                NRF_LOG_INFO("BLE ORDER: encrypt");
-                test_crypt_ccm();
-            }
-        }
+        on_uart_receive(p_evt->conn_handle, p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
 
-        //for (uint32_t i = 0; i < p_evt->params.rx_data.length; i++)
-        //{
-        //    do
-        //    {
-        //        err_code = app_uart_put(p_evt->params.rx_data.p_data[i]);
-        //        if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_BUSY))
-        //        {
-        //            NRF_LOG_ERROR("Failed receiving NUS message. Error 0x%x. ", err_code);
-        //            APP_ERROR_CHECK(err_code);
-        //        }
-        //    } while (err_code == NRF_ERROR_BUSY);
-        //}
-        //if (p_evt->params.rx_data.p_data[p_evt->params.rx_data.length - 1] == '\r')
-        //{
-        //    while (app_uart_put('\n') == NRF_ERROR_BUSY);
-        //}
+        for (uint32_t i = 0; i < p_evt->params.rx_data.length; i++)
+        {
+            do
+            {
+                err_code = app_uart_put(p_evt->params.rx_data.p_data[i]);
+                if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_BUSY))
+                {
+                    NRF_LOG_ERROR("Failed receiving NUS message. Error 0x%x. ", err_code);
+                    APP_ERROR_CHECK(err_code);
+                }
+            } while (err_code == NRF_ERROR_BUSY);
+        }
+        if (p_evt->params.rx_data.p_data[p_evt->params.rx_data.length - 1] == '\r')
+        {
+            while (app_uart_put('\n') == NRF_ERROR_BUSY);
+        }
     }
 
 }
@@ -352,8 +529,10 @@ static void services_init(void)
     // Initialize Queued Write Module.
     qwr_init.error_handler = nrf_qwr_error_handler;
 
-    err_code = nrf_ble_qwr_init(&m_qwr, &qwr_init);
-    APP_ERROR_CHECK(err_code);
+    for(int i =0; i < NRF_SDH_BLE_TOTAL_LINK_COUNT; i++){
+        err_code = nrf_ble_qwr_init(&m_qwr[i], &qwr_init);
+        APP_ERROR_CHECK(err_code);
+    }
 
     // Initialize NUS.
     memset(&nus_init, 0, sizeof(nus_init));
@@ -382,7 +561,7 @@ static void on_conn_params_evt(ble_conn_params_evt_t * p_evt)
 
     if (p_evt->evt_type == BLE_CONN_PARAMS_EVT_FAILED)
     {
-        err_code = sd_ble_gap_disconnect(m_conn_handle, BLE_HCI_CONN_INTERVAL_UNACCEPTABLE);
+        err_code = sd_ble_gap_disconnect(p_evt->conn_handle, BLE_HCI_CONN_INTERVAL_UNACCEPTABLE);
         APP_ERROR_CHECK(err_code);
     }
 }
@@ -473,22 +652,49 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
 static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 {
     uint32_t err_code;
+    ble_gap_evt_t * const p_gap_evt = (ble_gap_evt_t * const)&p_ble_evt->evt.gap_evt;
+    uint32_t    periph_link_cnt = ble_conn_state_peripheral_conn_count(); // Number of peripheral links.
 
     switch (p_ble_evt->header.evt_id)
     {
         case BLE_GAP_EVT_CONNECTED:
             NRF_LOG_INFO("Connected");
-            err_code = bsp_indication_set(BSP_INDICATE_CONNECTED);
-            APP_ERROR_CHECK(err_code);
-            m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
-            err_code = nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
-            APP_ERROR_CHECK(err_code);
+            // todo : check code
+            // err_code = bsp_indication_set(BSP_INDICATE_CONNECTED);
+            // APP_ERROR_CHECK(err_code);
+
+            for(int i =0; i < NRF_SDH_BLE_TOTAL_LINK_COUNT;i++){
+              if(m_qwr[i].conn_handle == BLE_CONN_HANDLE_INVALID){
+                err_code = nrf_ble_qwr_conn_handle_assign(&m_qwr[i], p_gap_evt->conn_handle);
+                APP_ERROR_CHECK(err_code);
+
+                on_connection(i, p_gap_evt->conn_handle);
+                break;
+              }
+            }
+            if(periph_link_cnt != NRF_SDH_BLE_TOTAL_LINK_COUNT)
+              advertising_start();
             break;
 
         case BLE_GAP_EVT_DISCONNECTED:
-            NRF_LOG_INFO("Disconnected");
-            // LED indication will be changed when advertising starts.
-            m_conn_handle = BLE_CONN_HANDLE_INVALID;
+             NRF_LOG_INFO("Connection 0x%x has been disconnected. Reason: 0x%X",
+                 p_gap_evt->conn_handle,
+                 p_gap_evt->params.disconnected.reason);
+
+            // handleStopSession(p_gap_evt->conn_handle);
+
+             for(int i =0; i < NRF_SDH_BLE_TOTAL_LINK_COUNT; i++){
+                if(m_qwr[i].conn_handle == p_gap_evt->conn_handle){
+                    on_disconnection(i, p_gap_evt->conn_handle);
+                    m_qwr[i].conn_handle = BLE_CONN_HANDLE_INVALID;
+                    break;
+                }
+            }
+
+            if (periph_link_cnt == (NRF_SDH_BLE_TOTAL_LINK_COUNT - 1)){
+                // Advertising is not running when all connections are taken, and must therefore be started.
+                advertising_start();
+            }
             break;
 
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
@@ -499,34 +705,38 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
                 .rx_phys = BLE_GAP_PHY_AUTO,
                 .tx_phys = BLE_GAP_PHY_AUTO,
             };
-            err_code = sd_ble_gap_phy_update(p_ble_evt->evt.gap_evt.conn_handle, &phys);
+            err_code = sd_ble_gap_phy_update(p_gap_evt->conn_handle, &phys);
             APP_ERROR_CHECK(err_code);
         } break;
 
         case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
             // Pairing not supported
-            err_code = sd_ble_gap_sec_params_reply(m_conn_handle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
+            err_code = sd_ble_gap_sec_params_reply(p_gap_evt->conn_handle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
             APP_ERROR_CHECK(err_code);
             break;
 
         case BLE_GATTS_EVT_SYS_ATTR_MISSING:
             // No system attributes have been stored.
-            err_code = sd_ble_gatts_sys_attr_set(m_conn_handle, NULL, 0, 0);
+            err_code = sd_ble_gatts_sys_attr_set(p_gap_evt->conn_handle, NULL, 0, 0);
             APP_ERROR_CHECK(err_code);
             break;
 
         case BLE_GATTC_EVT_TIMEOUT:
             // Disconnect on GATT Client timeout event.
-            err_code = sd_ble_gap_disconnect(p_ble_evt->evt.gattc_evt.conn_handle,
+            err_code = sd_ble_gap_disconnect(p_gap_evt->conn_handle,
                                              BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
             APP_ERROR_CHECK(err_code);
             break;
 
         case BLE_GATTS_EVT_TIMEOUT:
             // Disconnect on GATT Server timeout event.
-            err_code = sd_ble_gap_disconnect(p_ble_evt->evt.gatts_evt.conn_handle,
+            err_code = sd_ble_gap_disconnect(p_gap_evt->conn_handle,
                                              BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
             APP_ERROR_CHECK(err_code);
+            break;
+
+        case BLE_GAP_EVT_RSSI_CHANGED:
+            on_rssi_changed(p_gap_evt->conn_handle, p_ble_evt->evt.gap_evt.params.rssi_changed.rssi);
             break;
 
         default:
@@ -565,11 +775,13 @@ static void ble_stack_init(void)
 /**@brief Function for handling events from the GATT library. */
 void gatt_evt_handler(nrf_ble_gatt_t * p_gatt, nrf_ble_gatt_evt_t const * p_evt)
 {
-    if ((m_conn_handle == p_evt->conn_handle) && (p_evt->evt_id == NRF_BLE_GATT_EVT_ATT_MTU_UPDATED))
-    {
-        m_ble_nus_max_data_len = p_evt->params.att_mtu_effective - OPCODE_LENGTH - HANDLE_LENGTH;
-        NRF_LOG_INFO("Data len is set to 0x%X(%d)", m_ble_nus_max_data_len, m_ble_nus_max_data_len);
+    for(int i =0; i < NRF_SDH_BLE_TOTAL_LINK_COUNT;i++){
+        if(m_qwr[i].conn_handle == p_evt->conn_handle){
+            m_ble_nus_max_data_len = p_evt->params.att_mtu_effective - OPCODE_LENGTH - HANDLE_LENGTH;
+            NRF_LOG_INFO("Data len is set to 0x%X(%d)", m_ble_nus_max_data_len, m_ble_nus_max_data_len);    
+        }
     }
+
     NRF_LOG_DEBUG("ATT MTU exchange completed. central 0x%x peripheral 0x%x",
                   p_gatt->att_mtu_desired_central,
                   p_gatt->att_mtu_desired_periph);
@@ -581,6 +793,8 @@ void gatt_init(void)
 {
     ret_code_t err_code;
 
+    //
+    // check this function....
     err_code = nrf_ble_gatt_init(&m_gatt, gatt_evt_handler);
     APP_ERROR_CHECK(err_code);
 
@@ -596,6 +810,8 @@ void gatt_init(void)
 void bsp_event_handler(bsp_event_t event)
 {
     uint32_t err_code;
+    uint32_t periph_link_cnt;
+
     switch (event)
     {
         case BSP_EVENT_SLEEP:
@@ -603,16 +819,13 @@ void bsp_event_handler(bsp_event_t event)
             break;
 
         case BSP_EVENT_DISCONNECT:
-            err_code = sd_ble_gap_disconnect(m_conn_handle, BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-            if (err_code != NRF_ERROR_INVALID_STATE)
-            {
-                APP_ERROR_CHECK(err_code);
-            }
+            app_ble_disconnect_all(BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
             break;
 
         case BSP_EVENT_WHITELIST_OFF:
-            if (m_conn_handle == BLE_CONN_HANDLE_INVALID)
-            {
+            periph_link_cnt = ble_conn_state_peripheral_conn_count(); // Number of peripheral links.
+
+            if (periph_link_cnt == (NRF_SDH_BLE_TOTAL_LINK_COUNT - 1)){
                 err_code = ble_advertising_restart_without_whitelist(&m_advertising);
                 if (err_code != NRF_ERROR_INVALID_STATE)
                 {
@@ -644,32 +857,32 @@ void uart_event_handle(app_uart_evt_t * p_event)
     {
         case APP_UART_DATA_READY:
             UNUSED_VARIABLE(app_uart_get(&data_array[index]));
-            index++;
+            //index++;
 
-            if ((data_array[index - 1] == '\n') ||
-                (data_array[index - 1] == '\r') ||
-                (index >= m_ble_nus_max_data_len))
-            {
-                if (index > 1)
-                {
-                    NRF_LOG_DEBUG("Ready to send data over BLE NUS");
-                    NRF_LOG_HEXDUMP_DEBUG(data_array, index);
+            //if ((data_array[index - 1] == '\n') ||
+            //    (data_array[index - 1] == '\r') ||
+            //    (index >= m_ble_nus_max_data_len))
+            //{
+            //    if (index > 1)
+            //    {
+            //        NRF_LOG_DEBUG("Ready to send data over BLE NUS");
+            //        NRF_LOG_HEXDUMP_DEBUG(data_array, index);
 
-                    do
-                    {
-                        uint16_t length = (uint16_t)index;
-                        err_code = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
-                        if ((err_code != NRF_ERROR_INVALID_STATE) &&
-                            (err_code != NRF_ERROR_RESOURCES) &&
-                            (err_code != NRF_ERROR_NOT_FOUND))
-                        {
-                            APP_ERROR_CHECK(err_code);
-                        }
-                    } while (err_code == NRF_ERROR_RESOURCES);
-                }
+            //        do
+            //        {
+            //            uint16_t length = (uint16_t)index;
+            //            err_code = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
+            //            if ((err_code != NRF_ERROR_INVALID_STATE) &&
+            //                (err_code != NRF_ERROR_RESOURCES) &&
+            //                (err_code != NRF_ERROR_NOT_FOUND))
+            //            {
+            //                APP_ERROR_CHECK(err_code);
+            //            }
+            //        } while (err_code == NRF_ERROR_RESOURCES);
+            //    }
 
-                index = 0;
-            }
+            //    index = 0;
+            //}
             break;
 
         case APP_UART_COMMUNICATION_ERROR:
@@ -814,14 +1027,68 @@ static void idle_state_handle(void)
     }
 }
 
-
-/**@brief Function for starting advertising.
+/**@brief Function for handling Peer Manager events.
+ *
+ * @param[in] p_evt  Peer Manager event.
  */
-static void advertising_start(void)
+static void pm_evt_handler(pm_evt_t const * p_evt)
 {
-    uint32_t err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
+    bool delete_bonds = false;
+
+    pm_handler_on_pm_evt(p_evt);
+    pm_handler_disconnect_on_sec_failure(p_evt);
+    pm_handler_flash_clean(p_evt);
+
+    switch (p_evt->evt_id)
+    {
+        case PM_EVT_PEERS_DELETE_SUCCEEDED:
+            // advertising_start(&delete_bonds);
+            advertising_start();
+            break;
+
+       case PM_EVT_CONN_SEC_CONFIG_REQ: 
+       {
+            pm_conn_sec_config_t config = {.allow_repairing = true};
+            pm_conn_sec_config_reply(p_evt->conn_handle, &config);
+       } break;
+
+        default:
+            break;
+    }
+}
+
+/**@brief Function for the Peer Manager initialization. */
+static void peer_manager_init(void)
+{
+    ble_gap_sec_params_t sec_param;
+    ret_code_t           err_code;
+
+    err_code = pm_init();
+    APP_ERROR_CHECK(err_code);
+
+    memset(&sec_param, 0, sizeof(ble_gap_sec_params_t));
+
+    // Security parameters to be used for all security procedures.
+    sec_param.bond           = SEC_PARAM_BOND;
+    sec_param.mitm           = SEC_PARAM_MITM;
+    sec_param.lesc           = SEC_PARAM_LESC;
+    sec_param.keypress       = SEC_PARAM_KEYPRESS;
+    sec_param.io_caps        = SEC_PARAM_IO_CAPABILITIES;
+    sec_param.oob            = SEC_PARAM_OOB;
+    sec_param.min_key_size   = SEC_PARAM_MIN_KEY_SIZE;
+    sec_param.max_key_size   = SEC_PARAM_MAX_KEY_SIZE;
+    sec_param.kdist_own.enc  = 1;
+    sec_param.kdist_own.id   = 1;
+    sec_param.kdist_peer.enc = 1;
+    sec_param.kdist_peer.id  = 1;
+
+    err_code = pm_sec_params_set(&sec_param);
+    APP_ERROR_CHECK(err_code);
+
+    err_code = pm_register(pm_evt_handler);
     APP_ERROR_CHECK(err_code);
 }
+
 
 
 /**@brief Application main function.
