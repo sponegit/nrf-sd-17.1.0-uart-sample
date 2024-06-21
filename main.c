@@ -158,6 +158,7 @@ static int16_t m_rssi_sum[NRF_SDH_BLE_TOTAL_LINK_COUNT] = { 0, };
 static int8_t m_tx_power = 4;
 
 static void test_crypt_ccm(void);
+static void ble_data_send(uint16_t conn_handle, uint8_t *p_data, uint16_t length);
 
 static void set_tx_power_conn(uint16_t handle, int8_t tx_power) {
     if (handle != BLE_CONN_HANDLE_INVALID) {
@@ -209,41 +210,20 @@ static void on_uart_receive(uint16_t handle, uint8_t *p_data, uint16_t length) {
     if (length < 1)
         return;
 
+    // echo system...
     uint8_t id;
     id = p_data[0];
-    switch(id) {
-        case 0x30: {
-            test_crypt_ccm();
-                //char *str;
-                //str = malloc(length);
-                //if (str == NULL) {
-                //    NRF_LOG_ERROR("on_uart_receive:failed malloc(length);");
-                //    break;
-                //}
 
-                //memcpy(str, &p_data[1], length-1);
-                //str[length] = '\0';
-                //char *endptr;
-                //long number = strtol(str, &endptr, 10);
-                //if (*endptr != '\0' || endptr == str) {
-                //    NRF_LOG_ERROR("on_uart_receive:failed strtol(str, &endptr, 10);");
-                //} else if (number < -40 || number > 10) {
-                //    NRF_LOG_ERROR("on_uart_receive:invalid number=%d", number);
-                //} else {
-                //    int8_t tx_power;
-                //    tx_power = (int8_t)number;
-                //    m_tx_power = tx_power;
-                //    set_tx_power_adv(tx_power);
-                //    set_tx_power_conn_all(tx_power);
-                //}
+    uint8_t modified_data[length + 1];
 
-                //free(str);
-            }
-            break;
-        default: 
-            NRF_LOG_ERROR("unknown uart id:%d", id);
-            break;
+    modified_data[0] = id;
+    modified_data[1] = 0x00;
+
+    if (length > 1) {
+        memcpy(&modified_data[2], &p_data[1], length - 1);
     }
+
+    ble_data_send(handle, modified_data, length + 1);
 }
 
 static void on_rssi_changed(uint16_t handle, int16_t rssi) {
@@ -317,6 +297,21 @@ static void advertising_start(void)
 {
     uint32_t err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
     APP_ERROR_CHECK(err_code);
+}
+
+static void ble_data_send(uint16_t conn_handle, uint8_t *p_data, uint16_t length)
+{
+    uint32_t err_code;
+    do
+    {
+        err_code = ble_nus_data_send(&m_nus, p_data, &length, conn_handle);
+        if ((err_code != NRF_ERROR_INVALID_STATE) &&
+            (err_code != NRF_ERROR_RESOURCES) &&
+            (err_code != NRF_ERROR_NOT_FOUND))
+        {
+            APP_ERROR_CHECK(err_code);
+        }
+    } while (err_code == NRF_ERROR_RESOURCES);
 }
 
 
