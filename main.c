@@ -171,6 +171,19 @@ static void test_crypt_gcm(void);
 static void ble_data_send(uint16_t conn_handle, uint8_t *p_data, uint16_t length);
 static uint32_t ble_data_decrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t mac_length, uint8_t* p_nonce2, uint8_t* p_decrypt);
 static uint32_t ble_data_encrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t mac_length, uint8_t* p_nonce2, uint8_t* p_encrypt);
+static void gap_conn_params_update(uint16_t conn_handle);
+
+void print_connection_parameters(ble_gap_conn_params_t const * p_conn_params)
+{
+    uint16_t min_conn_interval = p_conn_params->min_conn_interval * 1.25;
+    uint16_t max_conn_interval = p_conn_params->max_conn_interval * 1.25;
+    uint16_t conn_sup_timeout = p_conn_params->conn_sup_timeout * 10;
+
+    NRF_LOG_INFO("Connection Interval Min: %d ms", min_conn_interval);
+    NRF_LOG_INFO("Connection Interval Max: %d ms", max_conn_interval);
+    NRF_LOG_INFO("Connection Timeout: %d ms", conn_sup_timeout);
+    NRF_LOG_INFO("Slave Latency: %d", p_conn_params->slave_latency);
+}
 
 static void generate_random_nonce(uint8_t *nonce, size_t start, size_t size) 
 {
@@ -535,6 +548,20 @@ static void gap_params_init(void)
     gap_conn_params.conn_sup_timeout  = CONN_SUP_TIMEOUT;
 
     err_code = sd_ble_gap_ppcp_set(&gap_conn_params);
+    APP_ERROR_CHECK(err_code);
+}
+
+static void gap_conn_params_update(uint16_t conn_handle)
+{
+    uint32_t                err_code;
+    ble_gap_conn_params_t   conn_params;
+
+    conn_params.min_conn_interval = MIN_CONN_INTERVAL;
+    conn_params.max_conn_interval = MAX_CONN_INTERVAL;
+    conn_params.slave_latency     = SLAVE_LATENCY;
+    conn_params.conn_sup_timeout  = CONN_SUP_TIMEOUT;
+
+    err_code = sd_ble_gap_conn_param_update(conn_handle, &conn_params);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -1031,9 +1058,17 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
                 APP_ERROR_CHECK(err_code);
 
                 on_connection(i, p_gap_evt->conn_handle);
+
                 break;
               }
             }
+
+           print_connection_parameters(&p_gap_evt->params.connected.conn_params);
+           // setting conn_param..
+           // gap_conn_params_update(p_gap_evt->conn_handle);
+
+           // set again
+
             if(periph_link_cnt != NRF_SDH_BLE_TOTAL_LINK_COUNT)
               advertising_start();
             break;
@@ -1099,6 +1134,16 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 
         case BLE_GAP_EVT_RSSI_CHANGED:
             on_rssi_changed(p_gap_evt->conn_handle, p_ble_evt->evt.gap_evt.params.rssi_changed.rssi);
+            break;
+
+        case BLE_GAP_EVT_CONN_PARAM_UPDATE:
+            NRF_LOG_INFO("Connection parameters updated");
+            print_connection_parameters(&p_gap_evt->params.conn_param_update.conn_params);
+            break;
+
+        case BLE_GAP_EVT_CONN_PARAM_UPDATE_REQUEST:
+            NRF_LOG_INFO("Connection parameters update requested");
+            print_connection_parameters(&p_gap_evt->params.conn_param_update_request.conn_params);
             break;
 
         default:
@@ -1329,6 +1374,12 @@ static void advertising_init(void)
     init.config.ble_adv_fast_enabled  = true;
     init.config.ble_adv_fast_interval = APP_ADV_INTERVAL;
     init.config.ble_adv_fast_timeout  = APP_ADV_DURATION;
+
+    ble_advdata_conn_int_t conn_int;
+    conn_int.min_conn_interval = MIN_CONN_INTERVAL;
+    conn_int.max_conn_interval = MAX_CONN_INTERVAL;
+    init.advdata.p_slave_conn_int = &conn_int;
+
     init.evt_handler = on_adv_evt;
 
     err_code = ble_advertising_init(&m_advertising, &init);
@@ -1478,7 +1529,7 @@ int main(void)
     printf("\r\nUART started.\r\n");
     NRF_LOG_INFO("Debug logging for UART over RTT started.(new version)");
     advertising_start();
-    test_crypt_gcm();
+    //test_crypt_gcm();
     
     // Enter main loop.
     for (;;)
