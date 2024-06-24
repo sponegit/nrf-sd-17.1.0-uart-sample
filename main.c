@@ -274,7 +274,7 @@ static void ble_data_send_echo(uint16_t handle, uint8_t *p_data, uint16_t length
             memcpy(data_body, echo_data, echo_length);
             generate_random_nonce(data_body, echo_length, TEST_BLE_MSG_MIN_SIZE - echo_length);
 
-            err_code = ble_data_decrypt(
+            err_code = ble_data_encrypt(
                 data_body,
                 body_length,
                 data_mac,
@@ -283,7 +283,7 @@ static void ble_data_send_echo(uint16_t handle, uint8_t *p_data, uint16_t length
             );
         }
         else {
-            err_code = ble_data_decrypt(
+            err_code = ble_data_encrypt(
                 echo_data,
                 body_length,
                 data_mac,
@@ -315,61 +315,63 @@ static void on_uart_receive(uint16_t handle, uint8_t *p_data, uint16_t length)
     if (length < 1)
         return;
 
-    if (m_use_crypte) {
-        if (length > TEST_BLE_MSG_MIN_SIZE) {
-            // define...
-            uint8_t body_length = length - (TEST_BLE_MSG_HEADER_SIZE);
-            uint8_t data_mac[TEST_AES_MAC_SIZE];
-            uint8_t data_nonce2[TEST_AES_NONCE2_SIZE];
-            uint8_t data_body[body_length];
-            uint8_t data_out[body_length];
-
-            // copy
-            uint8_t start = 0;
-            memcpy(data_mac, &p_data[start], TEST_AES_MAC_SIZE); start += TEST_AES_MAC_SIZE;
-            memcpy(data_nonce2, &p_data[start], TEST_AES_NONCE2_SIZE); start += TEST_AES_NONCE2_SIZE;
-            memcpy(data_body, &p_data[start], body_length);
-
-            // decrypt
-            uint32_t result;
-            result = ble_data_decrypt(
-                data_body,
-                body_length,
-                data_mac,
-                data_nonce2,
-                data_out
-            );
-
-            if (result == 0) {
-                // success
-                uint8_t id = data_out[0];
-
-                switch(id) {
-                    case 0x05:
-                    case 0x06:{
-                            ble_data_send_echo(handle, data_out, 1);
-                        }
-                        break;
-                    case 0x30: {
-                            ble_data_send_echo(handle, data_out, 7);
-                        }
-                        break;
-                    default: {
-                            ble_data_send_error_event(handle, 0x03, id);
-                        }
-                        break;
-                }
-            }else {
-                // fail crypt 
-                ble_data_send_error_event(handle, 0x02, result);
-            }
-        }else {
-            // invalid length...
-            ble_data_send_error_event(handle, 0x00, 0);
-        }
-    }else {
-        // echo system...
+    if(!m_use_crypte){
         ble_data_send_echo(handle, p_data, length);
+        return;
+    }
+
+    if (length < TEST_BLE_MSG_MIN_SIZE){
+        // invalid length...
+        ble_data_send_error_event(handle, 0x00, 0);
+        return;
+    }
+
+    // define...
+    uint8_t body_length = length - (TEST_BLE_MSG_HEADER_SIZE);
+    uint8_t data_mac[TEST_AES_MAC_SIZE];
+    uint8_t data_nonce2[TEST_AES_NONCE2_SIZE];
+    uint8_t data_body[body_length];
+    uint8_t data_out[body_length];
+
+    // copy
+    uint8_t start = 0;
+    memcpy(data_mac, &p_data[start], TEST_AES_MAC_SIZE); start += TEST_AES_MAC_SIZE;
+    memcpy(data_nonce2, &p_data[start], TEST_AES_NONCE2_SIZE); start += TEST_AES_NONCE2_SIZE;
+    memcpy(data_body, &p_data[start], body_length);
+
+    // decrypt
+    uint32_t result;
+    result = ble_data_decrypt(
+        data_body,
+        body_length,
+        data_mac,
+        data_nonce2,
+        data_out
+    );
+
+    if (result != 0) {
+        // fail crypt 
+        ble_data_send_error_event(handle, 0x02, result);
+        return;
+    }
+
+    // success
+    uint8_t id = data_out[0];
+
+    switch(id) {
+        case 0x05:
+        case 0x06:{
+                ble_data_send_echo(handle, data_out, 1);
+            }
+            break;
+        case 0x30: {
+                ble_data_send_echo(handle, data_out, 7);
+            }
+            break;
+        default: {
+                ble_data_send_error_event(handle, 0x03, id);
+            }
+            break;
     }
 }
 
@@ -680,11 +682,13 @@ static void test_crypt_ccm(void)
                                     sizeof(mac));
     AES_ERROR_CHECK(ret_val);
 
-    //NRF_LOG_INFO("encrypted text");
-    //NRF_LOG_HEXDUMP_INFO(encrypted_text, len);
+    NRF_LOG_INFO("encrypted text");
+    NRF_LOG_HEXDUMP_INFO(encrypted_text, len);
     
-    //NRF_LOG_INFO("mac");
-    //NRF_LOG_HEXDUMP_INFO(mac, sizeof(mac));
+    NRF_LOG_INFO("mac");
+    NRF_LOG_HEXDUMP_INFO(mac, sizeof(mac));
+
+    return;
 
     /* decrypt text */
     ret_val = nrf_crypto_aead_crypt(&ccm_ctx,
@@ -1357,7 +1361,7 @@ int main(void)
     printf("\r\nUART started.\r\n");
     NRF_LOG_INFO("Debug logging for UART over RTT started.(new version)");
     advertising_start();
-
+    
     // Enter main loop.
     for (;;)
     {
