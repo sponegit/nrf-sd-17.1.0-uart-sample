@@ -122,13 +122,12 @@
 
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
-#define TEST_AES_MAC_SIZE                              (10)
+#define TEST_AES_CCM_MAC_SIZE                              (10)
+#define TEST_AES_GCM_MAC_SIZE                              (16)
 #define TEST_AES_NONCE_SIZE                            (12)
 #define TEST_AES_NONCE1_SIZE                           (6)
 #define TEST_AES_NONCE2_SIZE                           (6)
-#define TEST_BLE_MSG_HEADER_SIZE                       TEST_AES_MAC_SIZE + TEST_AES_NONCE2_SIZE
 #define TEST_BLE_MSG_BODY_MIN_SIZE                     (16)
-#define TEST_BLE_MSG_MIN_SIZE                          TEST_BLE_MSG_HEADER_SIZE + TEST_BLE_MSG_BODY_MIN_SIZE
 #define TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE      (100)
 #define AES_ERROR_CHECK(error)  \
     do {            \
@@ -148,6 +147,7 @@ static uint8_t m_nonce_key[6] =    { 't', 'e', 's', 't', '1', '2' };
 
                                         
 static bool m_use_crypte = true;
+static bool m_crypte_ccm = false; // true : ccm, false : gcm
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
@@ -167,9 +167,10 @@ static int16_t m_rssi_sum[NRF_SDH_BLE_TOTAL_LINK_COUNT] = { 0, };
 static int8_t m_tx_power = 4;
 
 static void test_crypt_ccm(void);
+static void test_crypt_gcm(void);
 static void ble_data_send(uint16_t conn_handle, uint8_t *p_data, uint16_t length);
-static uint32_t ble_data_decrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t* p_nonce2, uint8_t* p_decrypt);
-static uint32_t ble_data_encrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t* p_nonce2, uint8_t* p_encrypt);
+static uint32_t ble_data_decrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t mac_length, uint8_t* p_nonce2, uint8_t* p_decrypt);
+static uint32_t ble_data_encrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t mac_length, uint8_t* p_nonce2, uint8_t* p_encrypt);
 
 static void generate_random_nonce(uint8_t *nonce, size_t start, size_t size) 
 {
@@ -257,27 +258,35 @@ static void ble_data_send_echo(uint16_t handle, uint8_t *p_data, uint16_t length
 
     if (m_use_crypte) {
         uint8_t body_length;
-        if (echo_length < TEST_BLE_MSG_MIN_SIZE)
-            body_length = TEST_BLE_MSG_MIN_SIZE;
+        if (echo_length < TEST_BLE_MSG_BODY_MIN_SIZE)
+            body_length = TEST_BLE_MSG_BODY_MIN_SIZE;
         else 
             body_length = echo_length;
 
-        uint8_t data_mac[TEST_AES_MAC_SIZE];
+        uint8_t mac_length;
+        if (m_crypte_ccm)
+          mac_length = TEST_AES_CCM_MAC_SIZE;
+        else
+          mac_length = TEST_AES_GCM_MAC_SIZE;
+
+
+        uint8_t data_mac[mac_length];
         uint8_t data_nonce2[TEST_AES_NONCE2_SIZE];
         uint8_t data_out[body_length];
 
 
         uint32_t err_code;
-        if (echo_length < TEST_BLE_MSG_MIN_SIZE) {
+        if (echo_length < TEST_BLE_MSG_BODY_MIN_SIZE) {
             uint8_t data_body[body_length];
 
             memcpy(data_body, echo_data, echo_length);
-            generate_random_nonce(data_body, echo_length, TEST_BLE_MSG_MIN_SIZE - echo_length);
+            generate_random_nonce(data_body, echo_length, TEST_BLE_MSG_BODY_MIN_SIZE - echo_length);
 
             err_code = ble_data_encrypt(
                 data_body,
                 body_length,
                 data_mac,
+                mac_length,
                 data_nonce2,
                 data_out
             );
@@ -287,21 +296,20 @@ static void ble_data_send_echo(uint16_t handle, uint8_t *p_data, uint16_t length
                 echo_data,
                 body_length,
                 data_mac,
+                mac_length,
                 data_nonce2,
                 data_out
             );
         }
 
-
         if (err_code == 0) {
-
-          uint8_t data_all[TEST_BLE_MSG_HEADER_SIZE + body_length];
+          uint8_t data_all[mac_length + TEST_AES_NONCE2_SIZE + body_length];
           uint8_t start = 0;
-          memcpy(&data_all[start], data_mac, TEST_AES_MAC_SIZE); start += TEST_AES_MAC_SIZE;
+          memcpy(&data_all[start], data_mac, mac_length); start += mac_length;
           memcpy(&data_all[start], data_nonce2, TEST_AES_NONCE2_SIZE); start += TEST_AES_NONCE2_SIZE;
           memcpy(&data_all[start], data_out, body_length);
 
-          ble_data_send(handle, data_all, TEST_BLE_MSG_HEADER_SIZE + body_length);
+          ble_data_send(handle, data_all, mac_length + TEST_AES_NONCE2_SIZE + body_length);
         }else {
           ble_data_send_error_event(handle, 0x01, err_code);
         }
@@ -320,22 +328,31 @@ static void on_uart_receive(uint16_t handle, uint8_t *p_data, uint16_t length)
         return;
     }
 
-    if (length < TEST_BLE_MSG_MIN_SIZE){
+
+    // define...
+    uint8_t mac_length;
+    if (m_crypte_ccm)
+      mac_length = TEST_AES_CCM_MAC_SIZE;
+    else
+      mac_length = TEST_AES_GCM_MAC_SIZE;
+
+    uint8_t min_msg_size;
+
+    if (length < mac_length + TEST_AES_NONCE2_SIZE + TEST_BLE_MSG_BODY_MIN_SIZE){
         // invalid length...
         ble_data_send_error_event(handle, 0x00, 0);
         return;
     }
 
-    // define...
-    uint8_t body_length = length - (TEST_BLE_MSG_HEADER_SIZE);
-    uint8_t data_mac[TEST_AES_MAC_SIZE];
+    uint8_t body_length = length - (mac_length + TEST_AES_NONCE2_SIZE);
+    uint8_t data_mac[mac_length];
     uint8_t data_nonce2[TEST_AES_NONCE2_SIZE];
     uint8_t data_body[body_length];
     uint8_t data_out[body_length];
 
     // copy
     uint8_t start = 0;
-    memcpy(data_mac, &p_data[start], TEST_AES_MAC_SIZE); start += TEST_AES_MAC_SIZE;
+    memcpy(data_mac, &p_data[start], mac_length); start += mac_length;
     memcpy(data_nonce2, &p_data[start], TEST_AES_NONCE2_SIZE); start += TEST_AES_NONCE2_SIZE;
     memcpy(data_body, &p_data[start], body_length);
 
@@ -345,6 +362,7 @@ static void on_uart_receive(uint16_t handle, uint8_t *p_data, uint16_t length)
         data_body,
         body_length,
         data_mac,
+        mac_length,
         data_nonce2,
         data_out
     );
@@ -534,7 +552,7 @@ static void nrf_qwr_error_handler(uint32_t nrf_error)
 }
 
 // it's normal
-static uint32_t ble_data_encrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t* p_nonce2, uint8_t* p_encrypt)
+static uint32_t ble_data_encrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t mac_length, uint8_t* p_nonce2, uint8_t* p_encrypt)
 {
     uint32_t    err_code;
 
@@ -542,15 +560,23 @@ static uint32_t ble_data_encrypt(uint8_t* p_data, uint16_t length, uint8_t* p_ma
     
     nrf_crypto_aead_context_t ccm_ctx;
     uint8_t encrypted_data[length];
+    nrf_crypto_aead_info_t const * p_aead_info;
     
     
     memcpy(nonce, m_nonce_key, TEST_AES_NONCE1_SIZE);
     generate_random_nonce(nonce, TEST_AES_NONCE1_SIZE, TEST_AES_NONCE2_SIZE);
     memcpy(p_nonce2, &nonce[TEST_AES_NONCE1_SIZE], TEST_AES_NONCE2_SIZE);
 
+    if (m_crypte_ccm)
+      p_aead_info = &g_nrf_crypto_aes_ccm_128_info;
+    else
+      p_aead_info = &g_nrf_crypto_aes_gcm_128_info;
+
+    
+
     /* Init encrypt and decrypt context */
     err_code = nrf_crypto_aead_init(&ccm_ctx,
-                                   &g_nrf_crypto_aes_ccm_128_info,
+                                   p_aead_info,
                                    m_test_key);
 
                              
@@ -570,7 +596,7 @@ static uint32_t ble_data_encrypt(uint8_t* p_data, uint16_t length, uint8_t* p_ma
                                     length,
                                     p_encrypt,
                                     p_mac,
-                                    TEST_AES_MAC_SIZE);
+                                    mac_length);
 
     if (err_code != NRF_SUCCESS) {
         AES_ERROR_CHECK(err_code);
@@ -584,7 +610,7 @@ static uint32_t ble_data_encrypt(uint8_t* p_data, uint16_t length, uint8_t* p_ma
     return NRF_SUCCESS;
 }
 
-static uint32_t ble_data_decrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t* p_nonce2, uint8_t* p_decrypt)
+static uint32_t ble_data_decrypt(uint8_t* p_data, uint16_t length, uint8_t* p_mac, uint8_t mac_length, uint8_t* p_nonce2, uint8_t* p_decrypt)
 {
     uint32_t    err_code;
 
@@ -592,14 +618,20 @@ static uint32_t ble_data_decrypt(uint8_t* p_data, uint16_t length, uint8_t* p_ma
     
     nrf_crypto_aead_context_t ccm_ctx;
     uint8_t encrypted_data[length];
+    nrf_crypto_aead_info_t const * p_aead_info;
     
     
     memcpy(nonce, m_nonce_key, TEST_AES_NONCE1_SIZE);
     memcpy(&nonce[TEST_AES_NONCE1_SIZE], p_nonce2, TEST_AES_NONCE2_SIZE);
 
+    if (m_crypte_ccm)
+      p_aead_info = &g_nrf_crypto_aes_ccm_128_info;
+    else
+      p_aead_info = &g_nrf_crypto_aes_gcm_128_info;
+
     /* Init encrypt and decrypt context */
     err_code = nrf_crypto_aead_init(&ccm_ctx,
-                                   &g_nrf_crypto_aes_ccm_128_info,
+                                   p_aead_info,
                                    m_test_key);
 
                              
@@ -619,7 +651,7 @@ static uint32_t ble_data_decrypt(uint8_t* p_data, uint16_t length, uint8_t* p_ma
                                     length,
                                     p_decrypt,
                                     p_mac,
-                                    TEST_AES_MAC_SIZE);
+                                    mac_length);
 
     if (err_code != NRF_SUCCESS) {
         AES_ERROR_CHECK(err_code);
@@ -638,7 +670,7 @@ static void test_crypt_ccm(void)
     uint32_t    len;
     ret_code_t  ret_val;
 
-    uint8_t     mac[TEST_AES_MAC_SIZE];   // 10bytes
+    uint8_t     mac[TEST_AES_CCM_MAC_SIZE];   // 10bytes
     uint8_t     nonce[]  = {                 // 12 bytes
       0x6B, 0x65, 0x79, 0x70, 0x6C, 0x65,
       0x09, 0x67, 0xC5, 0x69, 0x44, 0xDB
@@ -717,6 +749,91 @@ static void test_crypt_ccm(void)
     else
     {
         NRF_LOG_RAW_INFO("AES CCM example failed!!!.\r\n");
+    }
+}
+
+static void test_crypt_gcm(void)
+{
+    uint32_t    len;
+    ret_code_t  ret_val;
+
+    uint8_t     mac[TEST_AES_GCM_MAC_SIZE];   // 10bytes
+    uint8_t     nonce[]  = {                 // 12 bytes
+      0x6B, 0x65, 0x79, 0x70, 0x6C, 0x65,
+      0x09, 0x67, 0xC5, 0x69, 0x44, 0xDB
+    };
+    
+    nrf_crypto_aead_context_t gcm_ctx;
+
+    // memset(mac,   0, sizeof(mac));
+    // memset(nonce, 0, sizeof(nonce));
+
+    uint8_t plain_text[] =  { 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, // 16 bytes
+                                        0x30, 0x30, 0x30, 0x72, 0xFB, 0xBA, 
+                                        0x10, 0x19, 0xEF, 0xD9 };
+
+    uint8_t encrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
+    uint8_t decrypted_text[TEST_NRF_CRYPTO_EXAMPLE_AES_MAX_TEXT_SIZE];
+
+    len = sizeof(plain_text);
+
+
+    //NRF_LOG_INFO("plain_text");
+    //NRF_LOG_HEXDUMP_INFO(plain_text, len);
+    
+    /* Init encrypt and decrypt context */
+    ret_val = nrf_crypto_aead_init(&gcm_ctx,
+                                   &g_nrf_crypto_aes_gcm_128_info,
+                                   m_test_key);
+    AES_ERROR_CHECK(ret_val);
+
+    /* encrypt and tag text */
+    ret_val = nrf_crypto_aead_crypt(&gcm_ctx,
+                                    NRF_CRYPTO_ENCRYPT,
+                                    nonce,
+                                    sizeof(nonce),
+                                    NULL,
+                                    0,
+                                    (uint8_t *)plain_text,
+                                    len,
+                                    (uint8_t *)encrypted_text,
+                                    mac,
+                                    sizeof(mac));
+    AES_ERROR_CHECK(ret_val);
+
+    NRF_LOG_INFO("encrypted text");
+    NRF_LOG_HEXDUMP_INFO(encrypted_text, len);
+    
+    NRF_LOG_INFO("mac");
+    NRF_LOG_HEXDUMP_INFO(mac, sizeof(mac));
+
+    /* decrypt text */
+    ret_val = nrf_crypto_aead_crypt(&gcm_ctx,
+                                    NRF_CRYPTO_DECRYPT,
+                                    nonce,
+                                    sizeof(nonce),
+                                    NULL,
+                                    0,
+                                    (uint8_t *)encrypted_text,
+                                    len,
+                                    (uint8_t *)decrypted_text,
+                                    mac,
+                                    sizeof(mac));
+    AES_ERROR_CHECK(ret_val);
+
+    ret_val = nrf_crypto_aead_uninit(&gcm_ctx);
+    AES_ERROR_CHECK(ret_val);
+
+    //NRF_LOG_INFO("decrypted_text");
+    //NRF_LOG_HEXDUMP_INFO(decrypted_text, len);
+
+    if (memcmp(plain_text, decrypted_text, len) == 0)
+    {
+        NRF_LOG_RAW_INFO("AES GCM example executed successfully.\r\n");
+    }
+    else
+    {
+        NRF_LOG_RAW_INFO("AES GCM example failed!!!.\r\n");
     }
 }
 
@@ -1361,6 +1478,7 @@ int main(void)
     printf("\r\nUART started.\r\n");
     NRF_LOG_INFO("Debug logging for UART over RTT started.(new version)");
     advertising_start();
+    test_crypt_gcm();
     
     // Enter main loop.
     for (;;)
