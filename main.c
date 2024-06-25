@@ -53,6 +53,8 @@
 #include <string.h>
 #include "nordic_common.h"
 #include "nrf.h"
+#include "nrf_crypto.h"
+#include "nrf_crypto_aead.h"
 #include "ble_hci.h"
 #include "ble_advdata.h"
 #include "ble_advertising.h"
@@ -691,6 +693,19 @@ static void advertising_start(void)
     APP_ERROR_CHECK(err_code);
 }
 
+static void crypto_init(void)
+{
+    ret_code_t err_code;
+    
+    err_code = nrf_crypto_init();
+    APP_ERROR_CHECK(err_code);
+
+    err_code = nrf_crypto_aead_init();
+    APP_ERROR_CHECK(err_code);
+
+    NRF_LOG_INFO("Crypto module initialized.");
+}
+
 
 /**@brief Application main function.
  */
@@ -705,6 +720,7 @@ int main(void)
     buttons_leds_init(&erase_bonds);
     power_management_init();
     ble_stack_init();
+    crypto_init();
     gap_params_init();
     gatt_init();
     services_init();

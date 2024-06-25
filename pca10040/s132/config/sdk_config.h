@@ -941,7 +941,7 @@
 // <e> NRF_CRYPTO_BACKEND_CIFRA_ENABLED - Enable the Cifra backend.
 //==========================================================
 #ifndef NRF_CRYPTO_BACKEND_CIFRA_ENABLED
-#define NRF_CRYPTO_BACKEND_CIFRA_ENABLED 0
+#define NRF_CRYPTO_BACKEND_CIFRA_ENABLED 1
 #endif
 // <q> NRF_CRYPTO_BACKEND_CIFRA_AES_EAX_ENABLED  - Enable the AES EAX mode using Cifra.
  
@@ -955,7 +955,7 @@
 // <e> NRF_CRYPTO_BACKEND_MBEDTLS_ENABLED - Enable the mbed TLS backend.
 //==========================================================
 #ifndef NRF_CRYPTO_BACKEND_MBEDTLS_ENABLED
-#define NRF_CRYPTO_BACKEND_MBEDTLS_ENABLED 0
+#define NRF_CRYPTO_BACKEND_MBEDTLS_ENABLED 1
 #endif
 // <q> NRF_CRYPTO_BACKEND_MBEDTLS_AES_CBC_ENABLED  - Enable the AES CBC mode mbed TLS.
  
